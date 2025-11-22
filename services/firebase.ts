@@ -1,5 +1,4 @@
 import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
 import { getAuth, Auth } from "firebase/auth";
 
 // Your web app's Firebase configuration
@@ -16,21 +15,9 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
-// Initialize Analytics conditionally to prevent crashes
-let analytics;
-try {
-  analytics = getAnalytics(app);
-} catch (error) {
-  console.warn("Firebase Analytics failed to initialize (this is often expected in development or restricted environments):", error);
-}
+// Initialize Auth
+const auth = getAuth(app);
 
-// Initialize Auth conditionally
-let auth: Auth | undefined;
-try {
-  auth = getAuth(app);
-} catch (error) {
-  console.error("Firebase Auth failed to initialize. Check version compatibility.", error);
-}
-
-export { auth, analytics };
+// Export auth and app
+export { auth };
 export default app;
