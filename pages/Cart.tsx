@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ref, push, set } from 'firebase/database';
+import { ref, push, set, update } from 'firebase/database';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { CartItem, Order } from '../types';
@@ -53,7 +53,7 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
     setIsSubmitting(true);
 
     try {
-      // Create Order Object
+      // 1. Create Order Object
       const newOrderRef = push(ref(db, 'orders'));
       const orderData: Omit<Order, 'id'> = {
         customerName: formData.name,
@@ -63,11 +63,24 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
         items: cart,
         total: total,
         status: 'pending',
+        assignedDriverId: '', // Explicitly empty initially
         createdAt: new Date().toISOString(),
         paymentMethod: formData.paymentMethod
       };
 
       await set(newOrderRef, orderData);
+
+      // 2. Save/Update User Profile (Fix for missing customer node)
+      if (user.uid) {
+        const userRef = ref(db, `users/${user.uid}`);
+        await update(userRef, {
+          name: formData.name,
+          phone: formData.phone,
+          address: formData.address,
+          email: user.email,
+          lastOrderDate: new Date().toISOString()
+        });
+      }
 
       clearCart();
       setStep('success');

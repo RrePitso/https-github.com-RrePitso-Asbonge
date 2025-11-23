@@ -8,6 +8,13 @@ import { BarChartIcon, UtensilsIcon, TruckIcon, UserIcon, TrashIcon, PlusIcon, B
 import { Restaurant, MenuItem, AdminRole, AdminUser, Order } from '../types';
 import ImageUploader from '../components/ImageUploader';
 
+// --- STATUS ENUM PATCHED IN --- //
+const OrderStatus = {
+  PENDING: 'pending',
+  ASSIGNED: 'assigned',
+  DELIVERED: 'delivered'
+} as const;
+
 const DAILY_DATA = [
   { name: 'Mon', orders: 45, revenue: 4500 },
   { name: 'Tue', orders: 52, revenue: 5200 },
@@ -51,16 +58,22 @@ const AdminPage = () => {
     if (userRole) {
       // Realtime Listener for Orders
       const ordersRef = ref(db, 'orders');
+      console.log("Listening to orders at:", ordersRef.toString());
+      
       const unsubscribeOrders = onValue(ordersRef, (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.val();
+          console.log("Orders data received:", Object.keys(data).length, "items");
           const fetched = Object.keys(data).map(key => ({ id: key, ...data[key] })) as Order[];
           // Sort by newest first
           fetched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           setOrders(fetched);
         } else {
+          console.log("No orders data found in DB");
           setOrders([]);
         }
+      }, (error) => {
+        console.error("Orders listener error:", error);
       });
       
       if (userRole === 'super_admin') {
@@ -185,7 +198,7 @@ const AdminPage = () => {
         
         setNewAdminEmail('');
         fetchAdmins();
-    } catch (error) {
+      } catch (error) {
         console.error("Error adding admin:", error);
     }
   };
@@ -210,7 +223,7 @@ const AdminPage = () => {
     try {
       await update(ref(db, `orders/${orderId}`), { 
         assignedDriverId: driverEmail,
-        status: 'assigned'
+        status: OrderStatus.ASSIGNED
       });
       // No manual fetch needed, onValue listener will update state
     } catch (error) {
@@ -219,27 +232,54 @@ const AdminPage = () => {
   };
 
   const handleCompleteOrder = async (orderId: string) => {
-     if (window.confirm("Mark this order as delivered?")) {
-       setActionLoading(orderId);
-       try {
-         await update(ref(db, `orders/${orderId}`), { status: 'delivered' });
-         // No manual fetch needed, onValue listener will update state
-       } catch (error: any) {
-         console.error("Error updating order:", error);
-         alert(`Failed to update order: ${error.message}`);
-       } finally {
-         setActionLoading(null);
-       }
+     console.log("MARK DELIVERED CLICKED:", orderId);
+     // Removed window.confirm for now to rule out browser blocking
+
+     setActionLoading(orderId);
+     
+     try {
+       // Optimistic UI Update
+       setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: OrderStatus.DELIVERED } : o));
+
+       console.log("Attempting DB Update for:", `orders/${orderId}`, { status: OrderStatus.DELIVERED });
+
+       const orderRef = ref(db, `orders/${orderId}`);
+       
+       // Add a timeout race to detect hanging promises
+       const updatePromise = update(orderRef, { status: OrderStatus.DELIVERED });
+       const timeoutPromise = new Promise((_, reject) => 
+         setTimeout(() => reject(new Error("Database update timed out (5s)")), 5000)
+       );
+
+       await Promise.race([updatePromise, timeoutPromise]);
+       
+       console.log(`DB Update successful for ${orderId}`);
+       alert("Order marked as delivered!");
+     } catch (error: any) {
+       console.error("Error updating order:", error);
+       alert(`Failed to update database. Error: ${error.message}`);
+       // Revert optimistic update if failed
+       // In a real app we would revert, but let's keep it simple for debugging
+     } finally {
+       setActionLoading(null);
      }
   };
 
   // --- RENDERING HELPERS ---
   
   // Filter orders for Drivers
-  const myJobs = orders.filter(o => o.assignedDriverId?.toLowerCase() === user?.email?.toLowerCase() && o.status !== 'delivered');
-  const myCompletedJobs = orders.filter(o => o.assignedDriverId?.toLowerCase() === user?.email?.toLowerCase() && o.status === 'delivered');
-  const pendingOrders = orders.filter(o => o.status === 'pending');
-  const assignedOrders = orders.filter(o => o.status === 'assigned');
+  const myJobs = orders.filter(o => {
+      if (!user?.email || !o.assignedDriverId) return false;
+      return o.assignedDriverId.trim().toLowerCase() === user.email.trim().toLowerCase() && o.status !== OrderStatus.DELIVERED;
+  });
+  
+  const myCompletedJobs = orders.filter(o => {
+      if (!user?.email || !o.assignedDriverId) return false;
+      return o.assignedDriverId.trim().toLowerCase() === user.email.trim().toLowerCase() && o.status === OrderStatus.DELIVERED;
+  });
+
+  const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
+  const assignedOrders = orders.filter(o => o.status === OrderStatus.ASSIGNED);
 
   if (loading) return <div className="p-10 text-center">Loading Panel...</div>;
 
@@ -396,12 +436,12 @@ const AdminPage = () => {
                           </td>
                           <td className="p-4 text-sm max-w-xs truncate">{order.address}</td>
                           <td className="p-4">
-                             <span className={`px-2 py-1 rounded text-xs font-bold uppercase ${order.status === 'pending' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                             <span className={`px-2 py-1 rounded text-xs font-bold uppercase ${order.status === OrderStatus.PENDING ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
                                {order.status}
                              </span>
                           </td>
                           <td className="p-4">
-                             {order.status === 'pending' ? (
+                             {order.status === OrderStatus.PENDING ? (
                                <select 
                                 onChange={(e) => handleAssignDriver(order.id, e.target.value)}
                                 className="border rounded px-2 py-1 text-sm bg-white"
@@ -443,7 +483,7 @@ const AdminPage = () => {
                         <div>
                            <div className="flex items-center gap-2 mb-1">
                              <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded">#{job.id.slice(-4)}</span>
-                             <span className="text-xs font-bold text-blue-600 uppercase">Assigned</span>
+                             <span className="text-xs font-bold text-blue-600 uppercase">{OrderStatus.ASSIGNED.charAt(0).toUpperCase() + OrderStatus.ASSIGNED.slice(1)}</span>
                            </div>
                            <h3 className="text-lg font-bold text-gray-900">{job.address}</h3>
                            <p className="text-sm text-gray-600">Customer: {job.customerName} ({job.customerPhone})</p>

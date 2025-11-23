@@ -174,15 +174,15 @@ const AuthPage = () => {
       case 'auth/user-disabled': 
         return 'This account has been disabled. Please contact support.';
       case 'auth/user-not-found': 
-        return 'No account found with this email. Please Create a New Account.';
+        return 'No account found with this email. Please switch to "Create Account".';
       case 'auth/wrong-password': 
         return 'Incorrect password. Please try again.';
       case 'auth/invalid-credential': 
       case 'auth/invalid-login-credentials':
         // This is the common error for both "User Not Found" and "Wrong Password" in newer Firebase versions
         return isLogin 
-          ? 'Login failed. Incorrect email/password or account does not exist. Please create an account.' 
-          : 'Could not create account with these credentials. Try a different email.';
+          ? 'Login Failed: Account does not exist or password is wrong. Please create an account if you are new.' 
+          : 'Could not create account. Try a different email.';
       case 'auth/email-already-in-use': 
         return 'This email is already registered. Please Sign In instead.';
       case 'auth/weak-password':
