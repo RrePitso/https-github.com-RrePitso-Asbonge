@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
@@ -37,6 +37,10 @@ const AuthPage = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Get the page the user came from, or default to home
+  const from = location.state?.from?.pathname || location.state?.from || '/';
 
   useEffect(() => {
     // Cleanup recaptcha on unmount
@@ -65,7 +69,7 @@ const AuthPage = () => {
       } else {
         await createUserWithEmailAndPassword(auth, email, password);
       }
-      navigate('/');
+      navigate(from);
     } catch (err: any) {
       console.error("Auth Error:", err.code, err.message);
       setError(formatErrorMessage(err.code));
@@ -136,7 +140,7 @@ const AuthPage = () => {
 
     try {
       await verificationId.confirm(otp);
-      navigate('/');
+      navigate(from);
     } catch (err: any) {
       console.error(err);
       setError('Invalid code. Please try again.');
@@ -160,7 +164,7 @@ const AuthPage = () => {
         provider = new OAuthProvider('apple.com');
       }
       await signInWithPopup(auth, provider);
-      navigate('/');
+      navigate(from);
     } catch (err: any) {
       console.error(err);
       setError(formatErrorMessage(err.code));

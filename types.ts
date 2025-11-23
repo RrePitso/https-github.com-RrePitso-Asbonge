@@ -37,14 +37,24 @@ export interface ParcelRequest {
 
 // Stats for Admin Dashboard
 export interface DailyStat {
-  day: string;
+  name: string; // Changed from day to name to match Recharts expected format
   orders: number;
   revenue: number;
+  [key: string]: any;
 }
 
 export interface CategoryStat {
   name: string;
   value: number;
+  [key: string]: any;
+}
+
+export interface DriverStat {
+  email: string;
+  totalJobs: number;
+  totalRevenue: number;
+  averageRating: number;
+  ratingCount: number;
 }
 
 export type AdminRole = 'super_admin' | 'driver';
@@ -57,9 +67,10 @@ export interface AdminUser {
 
 export interface Order {
   id: string;
+  userId?: string; // Link to the customer
   customerName: string;
   customerPhone: string;
-  address: string;
+  address: string; // Delivery Address
   instructions: string;
   items: CartItem[];
   total: number;
@@ -67,4 +78,23 @@ export interface Order {
   assignedDriverId?: string; // Email of the driver
   createdAt: string;
   paymentMethod: 'cash' | 'card';
+  // New fields for Parcel logic
+  type?: 'food' | 'parcel';
+  pickupAddress?: string;
+  recipientName?: string;
+  // Review System
+  rating?: number;
+  feedback?: string;
+}
+
+export interface FeeSettings {
+  foodDeliveryFee: number;
+  parcelSmallFee: number;  // 0-5kg
+  parcelMediumFee: number; // 5-20kg
+  parcelLargeFee: number;  // 20kg+
+}
+
+export interface SavedAddress {
+  label: string; // e.g. "Home", "Work", or the address itself
+  address: string;
 }

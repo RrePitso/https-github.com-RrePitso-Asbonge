@@ -4,8 +4,8 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { ref, get, push, set, remove, update, onValue } from 'firebase/database';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChartIcon, UtensilsIcon, TruckIcon, UserIcon, TrashIcon, PlusIcon, BikeIcon, ClipboardIcon } from '../components/Icons';
-import { Restaurant, MenuItem, AdminRole, AdminUser, Order } from '../types';
+import { BarChartIcon, UtensilsIcon, TruckIcon, UserIcon, TrashIcon, PlusIcon, BikeIcon, StarIcon, XIcon, ClipboardIcon } from '../components/Icons';
+import { Restaurant, MenuItem, AdminRole, AdminUser, Order, DailyStat, CategoryStat, DriverStat, FeeSettings } from '../types';
 import ImageUploader from '../components/ImageUploader';
 
 // --- STATUS ENUM PATCHED IN --- //
@@ -15,22 +15,7 @@ const OrderStatus = {
   DELIVERED: 'delivered'
 } as const;
 
-const DAILY_DATA = [
-  { name: 'Mon', orders: 45, revenue: 4500 },
-  { name: 'Tue', orders: 52, revenue: 5200 },
-  { name: 'Wed', orders: 48, revenue: 4800 },
-  { name: 'Thu', orders: 61, revenue: 6100 },
-  { name: 'Fri', orders: 85, revenue: 10500 },
-  { name: 'Sat', orders: 95, revenue: 12000 },
-  { name: 'Sun', orders: 70, revenue: 8000 },
-];
-
-const CATEGORY_DATA = [
-  { name: 'Food Delivery', value: 75 },
-  { name: 'Parcels', value: 25 },
-];
-
-const COLORS = ['#E63946', '#457B9D'];
+const COLORS = ['#E63946', '#457B9D', '#FFB703'];
 
 const AdminPage = () => {
   const { user, loading, userRole } = useAuth();
@@ -51,6 +36,22 @@ const AdminPage = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
+  // Stats State
+  const [dailyStats, setDailyStats] = useState<DailyStat[]>([]);
+  const [categoryStats, setCategoryStats] = useState<CategoryStat[]>([]);
+  const [driverStats, setDriverStats] = useState<DriverStat[]>([]);
+
+  // Settings State
+  const [feeSettings, setFeeSettings] = useState<FeeSettings>({
+    foodDeliveryFee: 25,
+    parcelSmallFee: 50,
+    parcelMediumFee: 100,
+    parcelLargeFee: 200
+  });
+
+  // Review Inspection State
+  const [viewingDriverReviews, setViewingDriverReviews] = useState<string | null>(null);
+
   // Fetch Data on Load
   useEffect(() => {
     if (!loading && !user) return;
@@ -68,9 +69,44 @@ const AdminPage = () => {
           // Sort by newest first
           fetched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           setOrders(fetched);
+          
+          if (userRole === 'super_admin') {
+            calculateStats(fetched);
+          } else {
+             // Calculate stats for driver view (my rating)
+             const myDriverStats: Record<string, DriverStat> = {};
+             fetched.forEach(order => {
+                if (order.assignedDriverId && order.assignedDriverId.toLowerCase() === user.email?.toLowerCase()) {
+                    const email = order.assignedDriverId.toLowerCase();
+                     if (!myDriverStats[email]) {
+                         myDriverStats[email] = {
+                             email: email,
+                             totalJobs: 0,
+                             totalRevenue: 0,
+                             averageRating: 0,
+                             ratingCount: 0
+                         };
+                     }
+                     if (order.status === OrderStatus.DELIVERED) {
+                         myDriverStats[email].totalJobs += 1;
+                         myDriverStats[email].totalRevenue += Number(order.total) || 0;
+                         if (order.rating) {
+                             const prevTotal = myDriverStats[email].averageRating * myDriverStats[email].ratingCount;
+                             myDriverStats[email].ratingCount += 1;
+                             myDriverStats[email].averageRating = (prevTotal + order.rating) / myDriverStats[email].ratingCount;
+                         }
+                     }
+                }
+             });
+             setDriverStats(Object.values(myDriverStats));
+          }
+
         } else {
           console.log("No orders data found in DB");
           setOrders([]);
+          setDailyStats([]);
+          setCategoryStats([]);
+          setDriverStats([]);
         }
       }, (error) => {
         console.error("Orders listener error:", error);
@@ -79,11 +115,79 @@ const AdminPage = () => {
       if (userRole === 'super_admin') {
         fetchRestaurants();
         fetchAdmins();
+        fetchSettings();
       }
 
       return () => unsubscribeOrders();
     }
   }, [user, loading, userRole]);
+
+  const calculateStats = (ordersData: Order[]) => {
+      // 1. Calculate Daily Revenue (Last 7 Days from orders)
+      const dailyMap: Record<string, { orders: number, revenue: number }> = {};
+      const categoryMap: Record<string, number> = { 'Food': 0, 'Parcel': 0 };
+      const driverMap: Record<string, DriverStat> = {};
+
+      ordersData.forEach(order => {
+          // Only count valid orders
+          const date = new Date(order.createdAt).toLocaleDateString('en-US', { weekday: 'short' });
+          
+          if (!dailyMap[date]) dailyMap[date] = { orders: 0, revenue: 0 };
+          dailyMap[date].orders += 1;
+          
+          // Only add revenue if delivered or assigned (assuming successful)
+          if (order.status !== OrderStatus.PENDING) {
+             dailyMap[date].revenue += Number(order.total) || 0;
+          }
+
+          // Category Split
+          if (order.type === 'parcel') categoryMap['Parcel'] += 1;
+          else categoryMap['Food'] += 1;
+
+          // Driver Stats
+          if (order.assignedDriverId) {
+             const driverEmail = order.assignedDriverId.toLowerCase();
+             if (!driverMap[driverEmail]) {
+                 driverMap[driverEmail] = {
+                     email: driverEmail,
+                     totalJobs: 0,
+                     totalRevenue: 0,
+                     averageRating: 0,
+                     ratingCount: 0
+                 };
+             }
+             
+             if (order.status === OrderStatus.DELIVERED) {
+                 driverMap[driverEmail].totalJobs += 1;
+                 driverMap[driverEmail].totalRevenue += Number(order.total) || 0;
+                 if (order.rating) {
+                     // Running average calculation
+                     const prevTotal = driverMap[driverEmail].averageRating * driverMap[driverEmail].ratingCount;
+                     driverMap[driverEmail].ratingCount += 1;
+                     driverMap[driverEmail].averageRating = (prevTotal + order.rating) / driverMap[driverEmail].ratingCount;
+                 }
+             }
+          }
+      });
+
+      // Format for Recharts
+      const daysOrder = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const statsArray = Object.keys(dailyMap).map(key => ({
+          name: key,
+          orders: dailyMap[key].orders,
+          revenue: dailyMap[key].revenue
+      })).sort((a, b) => daysOrder.indexOf(a.name) - daysOrder.indexOf(b.name));
+
+      setDailyStats(statsArray);
+
+      const catArray = [
+          { name: 'Food Delivery', value: categoryMap['Food'] },
+          { name: 'Parcel Logistics', value: categoryMap['Parcel'] }
+      ];
+      setCategoryStats(catArray);
+
+      setDriverStats(Object.values(driverMap));
+  };
 
   const fetchRestaurants = async () => {
     try {
@@ -117,6 +221,29 @@ const AdminPage = () => {
     }
   };
 
+  const fetchSettings = async () => {
+    try {
+      const settingsRef = ref(db, 'settings/fees');
+      const snapshot = await get(settingsRef);
+      if (snapshot.exists()) {
+        setFeeSettings(snapshot.val());
+      }
+    } catch (error) {
+      console.error("Error fetching settings", error);
+    }
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await update(ref(db, 'settings/fees'), feeSettings);
+      alert("Settings saved successfully!");
+    } catch (error) {
+      console.error("Error saving settings:", error);
+      alert("Failed to save settings.");
+    }
+  };
+
   // --- RESTAURANT ACTIONS ---
   const handleSaveRestaurant = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,10 +274,9 @@ const AdminPage = () => {
   };
 
   const handleDeleteRestaurant = async (id: string) => {
-    if (window.confirm("Are you sure you want to delete this restaurant?")) {
-      await remove(ref(db, `restaurants/${id}`));
-      fetchRestaurants();
-    }
+    // Removed confirm dialog for smoother UX as per request
+    await remove(ref(db, `restaurants/${id}`));
+    fetchRestaurants();
   };
 
   const handleAddMenuItem = () => {
@@ -181,7 +307,6 @@ const AdminPage = () => {
 
     try {
         const adminsRef = ref(db, 'admins');
-        // Fetch all to check duplicate client-side (avoids missing index error)
         const snapshot = await get(adminsRef);
         
         if (snapshot.exists()) {
@@ -195,7 +320,6 @@ const AdminPage = () => {
         }
 
         await set(push(adminsRef), { email: emailToAdd, role: newAdminRole });
-        
         setNewAdminEmail('');
         fetchAdmins();
       } catch (error) {
@@ -204,18 +328,14 @@ const AdminPage = () => {
   };
 
   const handleRemoveAdmin = async (id: string) => {
-      if (window.confirm("Remove this user?")) {
-          await remove(ref(db, `admins/${id}`));
-          fetchAdmins();
-      }
+     await remove(ref(db, `admins/${id}`));
+     fetchAdmins();
   };
 
   const handlePromoteAdmin = async (id: string, currentRole: AdminRole) => {
     const newRole = currentRole === 'driver' ? 'super_admin' : 'driver';
-    if (window.confirm(`Change role to ${newRole}?`)) {
-      await update(ref(db, `admins/${id}`), { role: newRole });
-      fetchAdmins();
-    }
+    await update(ref(db, `admins/${id}`), { role: newRole });
+    fetchAdmins();
   };
 
   // --- DISPATCH ACTIONS ---
@@ -225,7 +345,6 @@ const AdminPage = () => {
         assignedDriverId: driverEmail,
         status: OrderStatus.ASSIGNED
       });
-      // No manual fetch needed, onValue listener will update state
     } catch (error) {
       console.error("Error assigning driver:", error);
     }
@@ -233,19 +352,16 @@ const AdminPage = () => {
 
   const handleCompleteOrder = async (orderId: string) => {
      console.log("MARK DELIVERED CLICKED:", orderId);
-     // Removed window.confirm for now to rule out browser blocking
-
      setActionLoading(orderId);
      
      try {
        // Optimistic UI Update
        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: OrderStatus.DELIVERED } : o));
 
-       console.log("Attempting DB Update for:", `orders/${orderId}`, { status: OrderStatus.DELIVERED });
+       console.log("Attempting DB Update for:", `orders/${orderId}`, OrderStatus.DELIVERED);
 
        const orderRef = ref(db, `orders/${orderId}`);
        
-       // Add a timeout race to detect hanging promises
        const updatePromise = update(orderRef, { status: OrderStatus.DELIVERED });
        const timeoutPromise = new Promise((_, reject) => 
          setTimeout(() => reject(new Error("Database update timed out (5s)")), 5000)
@@ -254,12 +370,9 @@ const AdminPage = () => {
        await Promise.race([updatePromise, timeoutPromise]);
        
        console.log(`DB Update successful for ${orderId}`);
-       alert("Order marked as delivered!");
      } catch (error: any) {
        console.error("Error updating order:", error);
        alert(`Failed to update database. Error: ${error.message}`);
-       // Revert optimistic update if failed
-       // In a real app we would revert, but let's keep it simple for debugging
      } finally {
        setActionLoading(null);
      }
@@ -267,7 +380,6 @@ const AdminPage = () => {
 
   // --- RENDERING HELPERS ---
   
-  // Filter orders for Drivers
   const myJobs = orders.filter(o => {
       if (!user?.email || !o.assignedDriverId) return false;
       return o.assignedDriverId.trim().toLowerCase() === user.email.trim().toLowerCase() && o.status !== OrderStatus.DELIVERED;
@@ -276,6 +388,11 @@ const AdminPage = () => {
   const myCompletedJobs = orders.filter(o => {
       if (!user?.email || !o.assignedDriverId) return false;
       return o.assignedDriverId.trim().toLowerCase() === user.email.trim().toLowerCase() && o.status === OrderStatus.DELIVERED;
+  });
+
+  const myReviews = orders.filter(o => {
+    if (!user?.email || !o.assignedDriverId) return false;
+    return o.assignedDriverId.trim().toLowerCase() === user.email.trim().toLowerCase() && o.rating;
   });
 
   const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
@@ -312,7 +429,48 @@ const AdminPage = () => {
   const isSuperAdmin = userRole === 'super_admin';
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative">
+      
+      {/* REVIEW DETAILS MODAL (Super Admin) */}
+      {viewingDriverReviews && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 animate-fade-in">
+              <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+                  <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+                      <h3 className="text-xl font-bold text-gray-900">Reviews for {viewingDriverReviews}</h3>
+                      <button onClick={() => setViewingDriverReviews(null)}><XIcon className="w-6 h-6 text-gray-500 hover:text-red-500" /></button>
+                  </div>
+                  <div className="p-6 overflow-y-auto">
+                      {orders.filter(o => o.assignedDriverId?.toLowerCase() === viewingDriverReviews.toLowerCase() && o.rating).length === 0 ? (
+                          <div className="text-center py-8">
+                             <StarIcon className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+                             <p className="text-gray-500 italic">No reviews found for this driver yet.</p>
+                          </div>
+                      ) : (
+                          <div className="space-y-4">
+                              {orders.filter(o => o.assignedDriverId?.toLowerCase() === viewingDriverReviews.toLowerCase() && o.rating).map(review => (
+                                  <div key={review.id} className="bg-gray-50 p-4 rounded-lg border border-gray-100">
+                                      <div className="flex justify-between items-start mb-2">
+                                          <div className="flex text-yellow-400">
+                                              {[...Array(5)].map((_, i) => (
+                                                  <StarIcon key={i} className="w-4 h-4" filled={i < (review.rating || 0)} />
+                                              ))}
+                                          </div>
+                                          <span className="text-xs text-gray-400">{new Date(review.createdAt).toLocaleDateString()}</span>
+                                      </div>
+                                      <p className="text-gray-700 italic">"{review.feedback || 'No written feedback'}"</p>
+                                      <div className="flex justify-between items-end mt-2">
+                                         <span className="text-xs font-bold text-gray-600">Customer: {review.customerName}</span>
+                                         <span className="text-xs text-gray-400">Order #{review.id.slice(-4)}</span>
+                                      </div>
+                                  </div>
+                              ))}
+                          </div>
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
       <div className="flex flex-col md:flex-row items-center justify-between mb-8 gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
@@ -335,13 +493,13 @@ const AdminPage = () => {
               <>
                 <button onClick={() => setActiveTab('dispatch')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'dispatch' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Dispatch ({pendingOrders.length})</button>
                 <button onClick={() => setActiveTab('restaurants')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'restaurants' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Restaurants</button>
-                <button onClick={() => setActiveTab('admins')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'admins' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Drivers & Staff</button>
+                <button onClick={() => setActiveTab('admins')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'admins' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Drivers</button>
+                <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'settings' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Settings</button>
               </>
             )}
             
-            {!isSuperAdmin && (
-               <button onClick={() => setActiveTab('myjobs')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'myjobs' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>My Jobs ({myJobs.length})</button>
-            )}
+            <button onClick={() => setActiveTab('myjobs')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'myjobs' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>My Jobs ({myJobs.length})</button>
+            <button onClick={() => setActiveTab('myreviews')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'myreviews' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>My Reviews ({myReviews.length})</button>
         </div>
       </div>
 
@@ -352,16 +510,18 @@ const AdminPage = () => {
                 {isSuperAdmin ? (
                   <>
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                      <p className="text-gray-500 text-sm font-medium uppercase">Total Orders (All Time)</p>
-                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{orders.length}</h3>
+                      <p className="text-gray-500 text-sm font-medium uppercase">Total Revenue (Verified)</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">
+                          R {orders.filter(o => o.status !== OrderStatus.PENDING).reduce((sum, o) => sum + (Number(o.total)||0), 0).toFixed(2)}
+                      </h3>
                     </div>
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
                       <p className="text-gray-500 text-sm font-medium uppercase">Pending Dispatch</p>
                       <h3 className="text-3xl font-bold text-gray-900 mt-2">{pendingOrders.length}</h3>
                     </div>
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                      <p className="text-gray-500 text-sm font-medium uppercase">Total Staff</p>
-                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{adminList.length}</h3>
+                      <p className="text-gray-500 text-sm font-medium uppercase">Active Drivers</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{adminList.filter(a => a.role === 'driver').length}</h3>
                     </div>
                   </>
                 ) : (
@@ -373,21 +533,28 @@ const AdminPage = () => {
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
                       <p className="text-gray-500 text-sm font-medium uppercase">Completed Jobs</p>
                       <h3 className="text-3xl font-bold text-gray-900 mt-2">{myCompletedJobs.length}</h3>
-                      <span className="text-green-500 text-sm font-bold">Good Job!</span>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                      <p className="text-gray-500 text-sm font-medium uppercase">My Rating</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2 flex items-center gap-2">
+                        {driverStats.find(d => d.email === user.email.toLowerCase())?.averageRating.toFixed(1) || '0.0'} 
+                        <StarIcon className="w-5 h-5 text-yellow-400" filled />
+                      </h3>
                     </div>
                   </>
                 )}
             </div>
 
             {isSuperAdmin && (
+              <>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
                   <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-96">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4">Weekly Revenue (Simulated)</h3>
+                  <h3 className="text-lg font-bold text-gray-800 mb-4">Actual Daily Revenue</h3>
                   <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={DAILY_DATA}>
+                      <BarChart data={dailyStats}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee"/>
                       <XAxis dataKey="name" axisLine={false} tickLine={false} />
-                      <YAxis axisLine={false} tickLine={false} tickFormatter={(value) => `R${value/1000}k`}/>
+                      <YAxis axisLine={false} tickLine={false} tickFormatter={(value) => `R${value}`}/>
                       <Tooltip formatter={(value: number) => [`R ${value}`, 'Revenue']} />
                       <Bar dataKey="revenue" fill="#1D3557" radius={[4, 4, 0, 0]} barSize={30} />
                       </BarChart>
@@ -398,14 +565,58 @@ const AdminPage = () => {
                   <h3 className="text-lg font-bold text-gray-800 mb-4">Service Distribution</h3>
                   <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                          <Pie data={CATEGORY_DATA} cx="50%" cy="50%" innerRadius={60} outerRadius={100} fill="#8884d8" paddingAngle={5} dataKey="value">
-                          {CATEGORY_DATA.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                          <Pie data={categoryStats} cx="50%" cy="50%" innerRadius={60} outerRadius={100} fill="#8884d8" paddingAngle={5} dataKey="value">
+                          {categoryStats.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
                           </Pie>
                           <Tooltip />
                       </PieChart>
                   </ResponsiveContainer>
                   </div>
               </div>
+
+              {/* Driver Performance Table */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden mb-8">
+                  <div className="p-6 border-b border-gray-100">
+                      <h3 className="text-lg font-bold text-gray-900">Driver Performance</h3>
+                      <p className="text-sm text-gray-500">Click on a driver to view their specific reviews.</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                          <thead className="bg-gray-50 text-xs text-gray-500 uppercase font-bold">
+                              <tr>
+                                  <th className="p-4">Driver</th>
+                                  <th className="p-4">Completed Jobs</th>
+                                  <th className="p-4">Total Revenue Generated</th>
+                                  <th className="p-4">Avg Rating</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                              {driverStats.map((driver) => (
+                                  <tr 
+                                    key={driver.email} 
+                                    className="hover:bg-blue-50 cursor-pointer group transition-colors"
+                                    onClick={() => setViewingDriverReviews(driver.email)}
+                                  >
+                                      <td className="p-4 font-medium text-gray-900 flex items-center gap-2">
+                                          {driver.email}
+                                          <span className="opacity-0 group-hover:opacity-100 text-xs text-brand-blue font-bold">view feedback &rarr;</span>
+                                      </td>
+                                      <td className="p-4">{driver.totalJobs}</td>
+                                      <td className="p-4 text-brand-dark font-bold">R {driver.totalRevenue.toFixed(2)}</td>
+                                      <td className="p-4 flex items-center gap-1">
+                                          {driver.averageRating.toFixed(1)} <StarIcon className="w-4 h-4 text-yellow-400" filled />
+                                          <span className="text-xs text-gray-400">({driver.ratingCount} reviews)</span>
+                                      </td>
+                                  </tr>
+                              ))}
+                              {driverStats.length === 0 && (
+                                  <tr><td colSpan={4} className="p-8 text-center text-gray-500">No driver data available yet.</td></tr>
+                              )}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+              </>
             )}
         </div>
       )}
@@ -419,9 +630,9 @@ const AdminPage = () => {
                   <table className="w-full text-left">
                     <thead className="bg-gray-50 text-gray-500 text-sm uppercase">
                       <tr>
-                        <th className="p-4">Order ID</th>
+                        <th className="p-4">Type</th>
                         <th className="p-4">Customer</th>
-                        <th className="p-4">Address</th>
+                        <th className="p-4">Route / Address</th>
                         <th className="p-4">Status</th>
                         <th className="p-4">Assign Driver</th>
                       </tr>
@@ -429,12 +640,27 @@ const AdminPage = () => {
                     <tbody className="divide-y divide-gray-100">
                       {[...pendingOrders, ...assignedOrders].map(order => (
                         <tr key={order.id} className="hover:bg-gray-50">
-                          <td className="p-4 font-mono text-xs">{order.id.slice(-6)}</td>
+                          <td className="p-4">
+                            {order.type === 'parcel' ? (
+                              <span className="bg-blue-100 text-blue-800 p-2 rounded-full inline-block"><TruckIcon className="w-4 h-4"/></span>
+                            ) : (
+                              <span className="bg-orange-100 text-orange-800 p-2 rounded-full inline-block"><UtensilsIcon className="w-4 h-4"/></span>
+                            )}
+                          </td>
                           <td className="p-4">
                             <div className="font-bold text-gray-900">{order.customerName}</div>
                             <div className="text-xs text-gray-500">{order.customerPhone}</div>
                           </td>
-                          <td className="p-4 text-sm max-w-xs truncate">{order.address}</td>
+                          <td className="p-4 text-sm max-w-xs">
+                             {order.type === 'parcel' ? (
+                               <div className="flex flex-col gap-1">
+                                  <div className="text-xs text-gray-500">From: {order.pickupAddress}</div>
+                                  <div className="font-medium">To: {order.address}</div>
+                               </div>
+                             ) : (
+                               <div className="truncate">{order.address}</div>
+                             )}
+                          </td>
                           <td className="p-4">
                              <span className={`px-2 py-1 rounded text-xs font-bold uppercase ${order.status === OrderStatus.PENDING ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
                                {order.status}
@@ -468,8 +694,8 @@ const AdminPage = () => {
          </div>
       )}
 
-      {/* --- MY JOBS TAB (Driver/Admin Only) --- */}
-      {activeTab === 'myjobs' && !isSuperAdmin && (
+      {/* --- MY JOBS TAB --- */}
+      {activeTab === 'myjobs' && (
          <div className="animate-fade-in">
              <h2 className="text-xl font-bold text-gray-900 mb-4">My Assigned Jobs</h2>
              <div className="grid grid-cols-1 gap-4">
@@ -480,15 +706,26 @@ const AdminPage = () => {
                 ) : (
                   myJobs.map(job => (
                     <div key={job.id} className="bg-white p-6 rounded-xl shadow-sm border border-blue-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div>
+                        <div className="flex-grow">
                            <div className="flex items-center gap-2 mb-1">
                              <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded">#{job.id.slice(-4)}</span>
-                             <span className="text-xs font-bold text-blue-600 uppercase">{OrderStatus.ASSIGNED.charAt(0).toUpperCase() + OrderStatus.ASSIGNED.slice(1)}</span>
+                             {job.type === 'parcel' && <span className="text-xs font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded">PARCEL</span>}
                            </div>
-                           <h3 className="text-lg font-bold text-gray-900">{job.address}</h3>
+                           
+                           {/* Job Details */}
+                           {job.type === 'parcel' ? (
+                              <div className="mb-2">
+                                <div className="text-sm font-bold text-gray-900">PICKUP: {job.pickupAddress}</div>
+                                <div className="text-sm font-bold text-brand-blue">DROP: {job.address}</div>
+                              </div>
+                           ) : (
+                              <h3 className="text-lg font-bold text-gray-900">{job.address}</h3>
+                           )}
+
                            <p className="text-sm text-gray-600">Customer: {job.customerName} ({job.customerPhone})</p>
-                           <p className="text-sm text-gray-500 mt-1 italic">"{job.instructions || 'No special instructions'}"</p>
+                           <p className="text-sm text-gray-500 mt-1 italic border-l-2 border-gray-300 pl-2">"{job.instructions || 'No special instructions'}"</p>
                            <div className="mt-2 text-sm font-bold text-brand-red">Collect: R {job.total} ({job.paymentMethod})</div>
+                           
                            {/* Display Items */}
                            {job.items && job.items.length > 0 && (
                              <div className="mt-2 text-xs text-gray-500">
@@ -508,6 +745,105 @@ const AdminPage = () => {
                 )}
              </div>
          </div>
+      )}
+
+      {/* --- MY REVIEWS TAB --- */}
+      {activeTab === 'myreviews' && (
+          <div className="animate-fade-in">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">My Customer Feedback</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {myReviews.length === 0 ? (
+                      <div className="col-span-full bg-white p-10 text-center rounded-xl border border-gray-100">
+                          <p className="text-gray-500">You haven't received any reviews yet.</p>
+                      </div>
+                  ) : (
+                      myReviews.map(review => (
+                          <div key={review.id} className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
+                              <div className="flex justify-between items-start mb-4">
+                                  <div className="flex text-yellow-400">
+                                      {[...Array(5)].map((_, i) => (
+                                          <StarIcon key={i} className="w-5 h-5" filled={i < (review.rating || 0)} />
+                                      ))}
+                                  </div>
+                                  <span className="text-xs text-gray-400 bg-gray-50 px-2 py-1 rounded">{new Date(review.createdAt).toLocaleDateString()}</span>
+                              </div>
+                              <p className="text-gray-700 italic mb-4 min-h-[3rem]">"{review.feedback || 'No written feedback provided.'}"</p>
+                              <div className="pt-4 border-t border-gray-50 flex justify-between items-center text-xs">
+                                  <span className="font-bold text-gray-600">{review.customerName}</span>
+                                  <span className="text-gray-400">Order #{review.id.slice(-4)}</span>
+                              </div>
+                          </div>
+                      ))
+                  )}
+              </div>
+          </div>
+      )}
+
+      {/* --- SETTINGS TAB (Super Admin) --- */}
+      {activeTab === 'settings' && isSuperAdmin && (
+          <div className="animate-fade-in bg-white rounded-xl shadow-sm border border-gray-100 p-8 max-w-2xl mx-auto">
+              <h2 className="text-xl font-bold text-gray-900 mb-6">Fee Configuration</h2>
+              <form onSubmit={handleSaveSettings} className="space-y-6">
+                  
+                  <div className="bg-gray-50 p-6 rounded-xl border border-gray-200">
+                      <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+                          <UtensilsIcon className="w-5 h-5" /> Food Delivery
+                      </h3>
+                      <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Standard Delivery Fee (ZAR)</label>
+                          <input 
+                              type="number"
+                              min="0"
+                              value={feeSettings.foodDeliveryFee}
+                              onChange={(e) => setFeeSettings({...feeSettings, foodDeliveryFee: Number(e.target.value)})}
+                              className="w-full border rounded-lg px-4 py-2"
+                          />
+                      </div>
+                  </div>
+
+                  <div className="bg-gray-50 p-6 rounded-xl border border-gray-200">
+                      <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+                          <TruckIcon className="w-5 h-5" /> Parcel Logistics
+                      </h3>
+                      <div className="space-y-4">
+                          <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Small Fee (0-5kg)</label>
+                              <input 
+                                  type="number"
+                                  min="0"
+                                  value={feeSettings.parcelSmallFee}
+                                  onChange={(e) => setFeeSettings({...feeSettings, parcelSmallFee: Number(e.target.value)})}
+                                  className="w-full border rounded-lg px-4 py-2"
+                              />
+                          </div>
+                          <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Medium Fee (5-20kg)</label>
+                              <input 
+                                  type="number"
+                                  min="0"
+                                  value={feeSettings.parcelMediumFee}
+                                  onChange={(e) => setFeeSettings({...feeSettings, parcelMediumFee: Number(e.target.value)})}
+                                  className="w-full border rounded-lg px-4 py-2"
+                              />
+                          </div>
+                          <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Large Fee (20kg+)</label>
+                              <input 
+                                  type="number"
+                                  min="0"
+                                  value={feeSettings.parcelLargeFee}
+                                  onChange={(e) => setFeeSettings({...feeSettings, parcelLargeFee: Number(e.target.value)})}
+                                  className="w-full border rounded-lg px-4 py-2"
+                              />
+                          </div>
+                      </div>
+                  </div>
+
+                  <button type="submit" className="w-full bg-brand-dark text-white font-bold py-3 rounded-lg hover:bg-gray-800 transition-colors">
+                      Save Settings
+                  </button>
+              </form>
+          </div>
       )}
 
       {/* --- RESTAURANTS TAB (Super Admin) --- */}

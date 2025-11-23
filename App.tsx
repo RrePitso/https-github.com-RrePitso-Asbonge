@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { HashRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { ShoppingBagIcon, TruckIcon, UtensilsIcon, BarChartIcon, MenuIcon, XIcon, UserIcon, LogOutIcon } from './components/Icons';
+import { ShoppingBagIcon, TruckIcon, UtensilsIcon, BarChartIcon, MenuIcon, XIcon, UserIcon, LogOutIcon, ClipboardIcon } from './components/Icons';
 import RestaurantsPage from './pages/Restaurants';
 import ParcelsPage from './pages/Parcels';
 import AdminPage from './pages/Admin';
 import HomePage from './pages/Home';
 import CartPage from './pages/Cart';
 import AuthPage from './pages/Auth';
+import OrdersPage from './pages/Orders'; // Import new page
 import { CartItem } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 
@@ -65,10 +66,13 @@ const Layout = ({ children, cartCount }: { children?: React.ReactNode; cartCount
                    </div>
                    
                    {/* Dropdown for Logout */}
-                   <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-100 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                   <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-100 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden">
+                     <Link to="/orders" className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 border-b border-gray-50">
+                        <ClipboardIcon className="w-4 h-4" /> My Orders
+                     </Link>
                      <button 
                        onClick={signOut}
-                       className="w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 rounded-lg"
+                       className="w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
                      >
                        <LogOutIcon className="w-4 h-4" /> Sign Out
                      </button>
@@ -109,12 +113,17 @@ const Layout = ({ children, cartCount }: { children?: React.ReactNode; cartCount
               <Link to="/admin" onClick={() => setIsMobileMenuOpen(false)} className="py-2 text-gray-700">Admin</Link>
               <div className="border-t border-gray-100 my-2"></div>
               {user ? (
-                <button 
-                  onClick={() => { signOut(); setIsMobileMenuOpen(false); }}
-                  className="py-2 text-red-600 font-bold flex items-center gap-2"
-                >
-                  <LogOutIcon className="w-4 h-4" /> Sign Out ({user.email?.split('@')[0]})
-                </button>
+                <>
+                  <Link to="/orders" onClick={() => setIsMobileMenuOpen(false)} className="py-2 text-gray-700 flex items-center gap-2">
+                    <ClipboardIcon className="w-4 h-4" /> My Orders
+                  </Link>
+                  <button 
+                    onClick={() => { signOut(); setIsMobileMenuOpen(false); }}
+                    className="py-2 text-red-600 font-bold flex items-center gap-2"
+                  >
+                    <LogOutIcon className="w-4 h-4" /> Sign Out ({user.email?.split('@')[0]})
+                  </button>
+                </>
               ) : (
                 <Link to="/auth" onClick={() => setIsMobileMenuOpen(false)} className="py-2 text-brand-dark font-bold">
                   Sign In / Register
@@ -183,6 +192,7 @@ const App = () => {
             <Route path="/parcels" element={<ParcelsPage />} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="/auth" element={<AuthPage />} />
+            <Route path="/orders" element={<OrdersPage />} />
           </Routes>
         </Layout>
       </HashRouter>

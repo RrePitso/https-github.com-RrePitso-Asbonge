@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ref, push, set, update } from 'firebase/database';
+import { ref, push, set, update, get } from 'firebase/database';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
-import { CartItem, Order } from '../types';
+import { CartItem, Order, FeeSettings } from '../types';
 import { TrashIcon, PlusIcon, MinusIcon, ShoppingBagIcon, CheckCircleIcon } from '../components/Icons';
+import LocationInput from '../components/LocationInput';
 
 interface Props {
   cart: CartItem[];
@@ -17,6 +18,7 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [deliveryFee, setDeliveryFee] = useState(25); // Default fallback
   
   const [formData, setFormData] = useState({
     name: '',
@@ -25,6 +27,8 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
     instructions: '',
     paymentMethod: 'cash' as 'cash' | 'card'
   });
+  
+  const [saveAddress, setSaveAddress] = useState(false);
 
   // Load saved form data from session if exists
   useEffect(() => {
@@ -33,10 +37,24 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
       setFormData(JSON.parse(saved));
       sessionStorage.removeItem('checkout_temp_data');
     }
+    
+    // Fetch Settings
+    const fetchFees = async () => {
+      try {
+        const snapshot = await get(ref(db, 'settings/fees'));
+        if (snapshot.exists()) {
+          const fees = snapshot.val() as FeeSettings;
+          if (fees.foodDeliveryFee) setDeliveryFee(fees.foodDeliveryFee);
+        }
+      } catch (err) {
+        console.error("Error fetching fees:", err);
+      }
+    };
+    fetchFees();
+
   }, []);
 
   const subtotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
-  const deliveryFee = 25; // Fixed delivery fee for West Rand
   const total = subtotal + deliveryFee;
 
   const handleCheckout = async (e: React.FormEvent) => {
@@ -56,6 +74,7 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
       // 1. Create Order Object
       const newOrderRef = push(ref(db, 'orders'));
       const orderData: Omit<Order, 'id'> = {
+        userId: user.uid, // Link order to user for history/reviews
         customerName: formData.name,
         customerPhone: formData.phone,
         address: formData.address,
@@ -65,7 +84,8 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
         status: 'pending',
         assignedDriverId: '', // Explicitly empty initially
         createdAt: new Date().toISOString(),
-        paymentMethod: formData.paymentMethod
+        paymentMethod: formData.paymentMethod,
+        type: 'food'
       };
 
       await set(newOrderRef, orderData);
@@ -73,13 +93,25 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
       // 2. Save/Update User Profile (Fix for missing customer node)
       if (user.uid) {
         const userRef = ref(db, `users/${user.uid}`);
-        await update(userRef, {
+        
+        const updateData: any = {
           name: formData.name,
           phone: formData.phone,
           address: formData.address,
           email: user.email,
           lastOrderDate: new Date().toISOString()
-        });
+        };
+
+        // 3. Save Address if requested
+        if (saveAddress && formData.address) {
+           const addressRef = push(ref(db, `users/${user.uid}/savedAddresses`));
+           await set(addressRef, {
+             label: 'Saved Address',
+             address: formData.address
+           });
+        }
+        
+        await update(userRef, updateData);
       }
 
       clearCart();
@@ -213,17 +245,13 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
                    </div>
                  </div>
                  
-                 <div>
-                   <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Address</label>
-                   <input 
-                     required
-                     name="address"
-                     value={formData.address}
-                     onChange={handleInputChange}
-                     className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-brand-red focus:border-transparent outline-none"
-                     placeholder="Street address, suburb..."
-                   />
-                 </div>
+                 <LocationInput 
+                   label="Delivery Address"
+                   value={formData.address}
+                   onChange={(val) => setFormData({...formData, address: val})}
+                   enableSave={true}
+                   onSaveToggle={setSaveAddress}
+                 />
 
                  <div>
                    <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Instructions (Optional)</label>
