@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { CartItem } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { ref, push, set } from 'firebase/database';
+import { db } from '../services/firebase';
+import { useAuth } from '../contexts/AuthContext';
+import { CartItem, Order } from '../types';
 import { TrashIcon, PlusIcon, MinusIcon, ShoppingBagIcon, CheckCircleIcon } from '../components/Icons';
 
 interface Props {
@@ -11,26 +14,70 @@ interface Props {
 
 const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
   const [step, setStep] = useState<'cart' | 'checkout' | 'success'>('cart');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     address: '',
     instructions: '',
-    paymentMethod: 'cash'
+    paymentMethod: 'cash' as 'cash' | 'card'
   });
+
+  // Load saved form data from session if exists
+  useEffect(() => {
+    const saved = sessionStorage.getItem('checkout_temp_data');
+    if (saved) {
+      setFormData(JSON.parse(saved));
+      sessionStorage.removeItem('checkout_temp_data');
+    }
+  }, []);
 
   const subtotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
   const deliveryFee = 25; // Fixed delivery fee for West Rand
   const total = subtotal + deliveryFee;
 
-  const handleCheckout = (e: React.FormEvent) => {
+  const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Simulate API processing
-    setTimeout(() => {
+    
+    if (!user) {
+      // Save form data to session storage
+      sessionStorage.setItem('checkout_temp_data', JSON.stringify(formData));
+      // Redirect to auth
+      navigate('/auth', { state: { from: '/cart' } });
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      // Create Order Object
+      const newOrderRef = push(ref(db, 'orders'));
+      const orderData: Omit<Order, 'id'> = {
+        customerName: formData.name,
+        customerPhone: formData.phone,
+        address: formData.address,
+        instructions: formData.instructions,
+        items: cart,
+        total: total,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        paymentMethod: formData.paymentMethod
+      };
+
+      await set(newOrderRef, orderData);
+
       clearCart();
       setStep('success');
       window.scrollTo(0, 0);
-    }, 1000);
+    } catch (error) {
+      console.error("Error placing order:", error);
+      alert("Failed to place order. Please try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -241,12 +288,14 @@ const CartPage: React.FC<Props> = ({ cart, updateQuantity, clearCart }) => {
                  <button 
                   type="submit"
                   form="checkout-form"
-                  className="w-full bg-brand-dark text-white py-4 rounded-lg font-bold text-lg hover:bg-gray-800 transition-transform hover:scale-[1.02] active:scale-[0.98] shadow-md"
+                  disabled={isSubmitting}
+                  className="w-full bg-brand-dark text-white py-4 rounded-lg font-bold text-lg hover:bg-gray-800 transition-transform hover:scale-[1.02] active:scale-[0.98] shadow-md disabled:opacity-70"
                 >
-                  Confirm Order
+                  {isSubmitting ? 'Processing...' : 'Confirm Order'}
                 </button>
                 <button 
                   onClick={() => setStep('cart')}
+                  disabled={isSubmitting}
                   className="w-full bg-white text-gray-500 py-2 rounded-lg font-medium hover:text-gray-800"
                 >
                   Back to Cart

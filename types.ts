@@ -46,3 +46,25 @@ export interface CategoryStat {
   name: string;
   value: number;
 }
+
+export type AdminRole = 'super_admin' | 'driver';
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: AdminRole;
+}
+
+export interface Order {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  address: string;
+  instructions: string;
+  items: CartItem[];
+  total: number;
+  status: 'pending' | 'assigned' | 'delivered';
+  assignedDriverId?: string; // Email of the driver
+  createdAt: string;
+  paymentMethod: 'cash' | 'card';
+}

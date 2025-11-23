@@ -67,7 +67,7 @@ const AuthPage = () => {
       }
       navigate('/');
     } catch (err: any) {
-      console.error(err);
+      console.error("Auth Error:", err.code, err.message);
       setError(formatErrorMessage(err.code));
     } finally {
       setLoading(false);
@@ -169,14 +169,32 @@ const AuthPage = () => {
 
   const formatErrorMessage = (code: string) => {
     switch (code) {
-      case 'auth/invalid-email': return 'Invalid email address.';
-      case 'auth/user-disabled': return 'This account has been disabled.';
-      case 'auth/user-not-found': return 'No account found with this email.';
-      case 'auth/wrong-password': return 'Incorrect password.';
-      case 'auth/email-already-in-use': return 'Email is already in use.';
-      case 'auth/quota-exceeded': return 'SMS quota exceeded for today. Please try another method.';
-      case 'auth/popup-closed-by-user': return 'Sign in was cancelled.';
-      default: return 'An error occurred. Please try again.';
+      case 'auth/invalid-email': 
+        return 'Invalid email address format.';
+      case 'auth/user-disabled': 
+        return 'This account has been disabled. Please contact support.';
+      case 'auth/user-not-found': 
+        return 'No account found with this email. Please Create a New Account.';
+      case 'auth/wrong-password': 
+        return 'Incorrect password. Please try again.';
+      case 'auth/invalid-credential': 
+      case 'auth/invalid-login-credentials':
+        // This is the common error for both "User Not Found" and "Wrong Password" in newer Firebase versions
+        return isLogin 
+          ? 'Login failed. Incorrect email/password or account does not exist. Please create an account.' 
+          : 'Could not create account with these credentials. Try a different email.';
+      case 'auth/email-already-in-use': 
+        return 'This email is already registered. Please Sign In instead.';
+      case 'auth/weak-password':
+        return 'Password should be at least 6 characters.';
+      case 'auth/quota-exceeded': 
+        return 'SMS quota exceeded for today. Please try another method.';
+      case 'auth/popup-closed-by-user': 
+        return 'Sign in was cancelled.';
+      case 'auth/network-request-failed':
+        return 'Network error. Please check your internet connection.';
+      default: 
+        return `An error occurred (${code}). Please try again.`;
     }
   };
 
@@ -187,9 +205,11 @@ const AuthPage = () => {
           As'B<span className="text-brand-red">o</span>nge
         </h2>
         <h2 className="mt-6 text-2xl font-extrabold text-gray-900">
-          Welcome Back
+          {isLogin ? 'Welcome Back' : 'Create Account'}
         </h2>
-        <p className="mt-2 text-sm text-gray-600">Sign in to order food or send parcels</p>
+        <p className="mt-2 text-sm text-gray-600">
+          {isLogin ? 'Sign in to order food or send parcels' : 'Join us to get started'}
+        </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
@@ -212,8 +232,9 @@ const AuthPage = () => {
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-600 text-sm rounded-md p-3 mb-6">
-              {error}
+            <div className="bg-red-50 border border-red-200 text-red-600 text-sm rounded-md p-3 mb-6 flex flex-col">
+              <span className="font-bold">Access Issue</span>
+              <span>{error}</span>
             </div>
           )}
 
@@ -259,7 +280,7 @@ const AuthPage = () => {
                   onClick={() => { setIsLogin(!isLogin); setError(''); }} 
                   className="text-sm font-medium text-brand-red hover:text-red-500"
                 >
-                  {isLogin ? 'Create a new account' : 'Sign in to existing account'}
+                  {isLogin ? 'No account? Create a new one' : 'Already have an account? Sign in'}
                 </button>
               </div>
             </form>

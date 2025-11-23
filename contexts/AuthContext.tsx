@@ -4,20 +4,21 @@ import {
   User, 
   signOut as firebaseSignOut 
 } from 'firebase/auth';
-import { ref, query, orderByChild, equalTo, get, push, set } from 'firebase/database';
+import { ref, get, push, set } from 'firebase/database';
 import { auth, db } from '../services/firebase';
+import { AdminRole } from '../types';
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  isAdmin: boolean;
+  userRole: AdminRole | null;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
-  isAdmin: false,
+  userRole: null,
   signOut: async () => {},
 });
 
@@ -26,7 +27,7 @@ export const useAuth = () => useContext(AuthContext);
 export const AuthProvider = ({ children }: { children?: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [userRole, setUserRole] = useState<AdminRole | null>(null);
 
   useEffect(() => {
     if (!auth) {
@@ -40,49 +41,55 @@ export const AuthProvider = ({ children }: { children?: React.ReactNode }) => {
       
       if (currentUser && currentUser.email) {
         try {
-          // 1. Check if user is already in 'admins' node in Realtime Database
+          // 1. Fetch all admins (avoid indexed query to prevent "Index not defined" error)
           const adminsRef = ref(db, 'admins');
-          const adminQuery = query(adminsRef, orderByChild('email'), equalTo(currentUser.email));
-          const snapshot = await get(adminQuery);
+          const snapshot = await get(adminsRef);
           
+          let foundRole: AdminRole | null = null;
+          let isDbEmpty = true;
+
           if (snapshot.exists()) {
-            setIsAdmin(true);
+            isDbEmpty = false;
+            const adminsData = snapshot.val();
+            // Client-side filter to find the user
+            const adminEntry = Object.values(adminsData).find((a: any) => a.email === currentUser.email) as { role: AdminRole } | undefined;
+            
+            if (adminEntry) {
+              foundRole = adminEntry.role || 'driver';
+            }
+          }
+
+          if (foundRole) {
+            setUserRole(foundRole);
           } else {
             // 2. LOGIC TO PROMOTE ADMIN
             // Condition A: It is the specific "owner" email
             const isOwner = currentUser.email === 'admin@gmail.com';
             
-            // Condition B: The admins list is completely empty (Bootstrap first user)
-            let isDbEmpty = false;
-            if (!isOwner) {
-                const allAdminsSnapshot = await get(adminsRef);
-                isDbEmpty = !allAdminsSnapshot.exists();
-            }
-
             if (isOwner || isDbEmpty) {
-              console.log(`Promoting ${currentUser.email} to admin...`);
+              console.log(`Promoting ${currentUser.email} to super_admin...`);
               const newAdminRef = push(adminsRef);
               await set(newAdminRef, { 
                 email: currentUser.email, 
                 role: 'super_admin',
                 createdAt: new Date().toISOString()
               });
-              setIsAdmin(true);
+              setUserRole('super_admin');
             } else {
-              setIsAdmin(false);
+              setUserRole(null);
             }
           }
         } catch (error) {
           console.error("Error verifying admin status:", error);
-          // Fallback for the owner account if DB fails (e.g. during dev)
+          // Fallback for the owner account if DB fails
           if (currentUser.email === 'admin@gmail.com') {
-             setIsAdmin(true);
+             setUserRole('super_admin');
           } else {
-             setIsAdmin(false);
+             setUserRole(null);
           }
         }
       } else {
-        setIsAdmin(false);
+        setUserRole(null);
       }
       
       setLoading(false);
@@ -102,7 +109,7 @@ export const AuthProvider = ({ children }: { children?: React.ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, isAdmin, signOut }}>
+    <AuthContext.Provider value={{ user, loading, userRole, signOut }}>
       {children}
     </AuthContext.Provider>
   );

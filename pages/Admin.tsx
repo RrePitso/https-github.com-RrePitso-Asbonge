@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { ref, get, push, set, remove, update, query, orderByChild, equalTo } from 'firebase/database';
+import { ref, get, push, set, remove, update, onValue } from 'firebase/database';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChartIcon, UtensilsIcon, TruckIcon, UserIcon, TrashIcon, PlusIcon } from '../components/Icons';
-import { Restaurant, MenuItem } from '../types';
+import { BarChartIcon, UtensilsIcon, TruckIcon, UserIcon, TrashIcon, PlusIcon, BikeIcon, ClipboardIcon } from '../components/Icons';
+import { Restaurant, MenuItem, AdminRole, AdminUser, Order } from '../types';
+import ImageUploader from '../components/ImageUploader';
 
 const DAILY_DATA = [
   { name: 'Mon', orders: 45, revenue: 4500 },
@@ -25,9 +26,8 @@ const CATEGORY_DATA = [
 const COLORS = ['#E63946', '#457B9D'];
 
 const AdminPage = () => {
-  const { user, loading, isAdmin } = useAuth();
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'overview' | 'restaurants' | 'admins'>('overview');
+  const { user, loading, userRole } = useAuth();
+  const [activeTab, setActiveTab] = useState<string>('overview');
   
   // Restaurant Management State
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
@@ -36,48 +36,75 @@ const AdminPage = () => {
   const [currentMenu, setCurrentMenu] = useState<MenuItem[]>([]);
   
   // Admin Management State
-  const [adminList, setAdminList] = useState<{id: string, email: string}[]>([]);
+  const [adminList, setAdminList] = useState<AdminUser[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [newAdminRole, setNewAdminRole] = useState<AdminRole>('driver');
+
+  // Orders / Dispatch State
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   // Fetch Data on Load
   useEffect(() => {
-    if (!loading && !user) {
-      // Allow viewing the "Login Required" screen
-      return;
-    }
+    if (!loading && !user) return;
     
-    if (isAdmin) {
-      fetchRestaurants();
-      fetchAdmins();
+    if (userRole) {
+      // Realtime Listener for Orders
+      const ordersRef = ref(db, 'orders');
+      const unsubscribeOrders = onValue(ordersRef, (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.val();
+          const fetched = Object.keys(data).map(key => ({ id: key, ...data[key] })) as Order[];
+          // Sort by newest first
+          fetched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setOrders(fetched);
+        } else {
+          setOrders([]);
+        }
+      });
+      
+      if (userRole === 'super_admin') {
+        fetchRestaurants();
+        fetchAdmins();
+      }
+
+      return () => unsubscribeOrders();
     }
-  }, [user, loading, isAdmin]);
+  }, [user, loading, userRole]);
 
   const fetchRestaurants = async () => {
-    const restaurantsRef = ref(db, 'restaurants');
-    const snapshot = await get(restaurantsRef);
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      const fetched = Object.keys(data).map(key => ({ id: key, ...data[key] }));
-      setRestaurants(fetched);
-    } else {
-      setRestaurants([]);
+    try {
+      const restaurantsRef = ref(db, 'restaurants');
+      const snapshot = await get(restaurantsRef);
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        const fetched = Object.keys(data).map(key => ({ id: key, ...data[key] }));
+        setRestaurants(fetched);
+      } else {
+        setRestaurants([]);
+      }
+    } catch (error) {
+      console.error("Error fetching restaurants", error);
     }
   };
 
   const fetchAdmins = async () => {
-    const adminsRef = ref(db, 'admins');
-    const snapshot = await get(adminsRef);
-    if (snapshot.exists()) {
-      const data = snapshot.val();
-      const fetched = Object.keys(data).map(key => ({ id: key, email: data[key].email }));
-      setAdminList(fetched);
-    } else {
-      setAdminList([]);
+    try {
+      const adminsRef = ref(db, 'admins');
+      const snapshot = await get(adminsRef);
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        const fetched = Object.keys(data).map(key => ({ id: key, ...data[key] })) as AdminUser[];
+        setAdminList(fetched);
+      } else {
+        setAdminList([]);
+      }
+    } catch (error) {
+      console.error("Error fetching admins", error);
     }
   };
 
   // --- RESTAURANT ACTIONS ---
-
   const handleSaveRestaurant = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -86,19 +113,14 @@ const AdminPage = () => {
         cuisine: currentRestaurant.cuisine,
         rating: Number(currentRestaurant.rating) || 4.5,
         deliveryTime: currentRestaurant.deliveryTime,
-        image: currentRestaurant.image || 'https://via.placeholder.com/400x300',
+        image: currentRestaurant.image || '',
         menu: currentMenu
       };
 
       if (currentRestaurant.id) {
-        // Update in RTDB
-        const restaurantRef = ref(db, `restaurants/${currentRestaurant.id}`);
-        await update(restaurantRef, restaurantData);
+        await update(ref(db, `restaurants/${currentRestaurant.id}`), restaurantData);
       } else {
-        // Create in RTDB
-        const restaurantsRef = ref(db, 'restaurants');
-        const newRestRef = push(restaurantsRef);
-        await set(newRestRef, restaurantData);
+        await set(push(ref(db, 'restaurants')), restaurantData);
       }
       
       setIsEditing(false);
@@ -113,8 +135,7 @@ const AdminPage = () => {
 
   const handleDeleteRestaurant = async (id: string) => {
     if (window.confirm("Are you sure you want to delete this restaurant?")) {
-      const restaurantRef = ref(db, `restaurants/${id}`);
-      await remove(restaurantRef);
+      await remove(ref(db, `restaurants/${id}`));
       fetchRestaurants();
     }
   };
@@ -139,24 +160,28 @@ const AdminPage = () => {
     setCurrentMenu(currentMenu.filter(item => item.id !== id));
   };
 
-  // --- ADMIN ACTIONS ---
-
+  // --- ADMIN MANAGEMENT ACTIONS (Super Admin) ---
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAdminEmail) return;
+    const emailToAdd = newAdminEmail.toLowerCase().trim();
+
     try {
-        // Check duplicate
         const adminsRef = ref(db, 'admins');
-        const q = query(adminsRef, orderByChild('email'), equalTo(newAdminEmail));
-        const snapshot = await get(q);
+        // Fetch all to check duplicate client-side (avoids missing index error)
+        const snapshot = await get(adminsRef);
         
         if (snapshot.exists()) {
-            alert("This user is already an admin.");
-            return;
+            const data = snapshot.val();
+            const exists = Object.values(data).some((a: any) => a.email.toLowerCase() === emailToAdd);
+            
+            if (exists) {
+                alert("This user is already a registered driver/admin.");
+                return;
+            }
         }
 
-        const newAdminRef = push(adminsRef);
-        await set(newAdminRef, { email: newAdminEmail, role: 'admin' });
+        await set(push(adminsRef), { email: emailToAdd, role: newAdminRole });
         
         setNewAdminEmail('');
         fetchAdmins();
@@ -166,24 +191,64 @@ const AdminPage = () => {
   };
 
   const handleRemoveAdmin = async (id: string) => {
-      if (window.confirm("Remove admin privileges from this user?")) {
-          const adminRef = ref(db, `admins/${id}`);
-          await remove(adminRef);
+      if (window.confirm("Remove this user?")) {
+          await remove(ref(db, `admins/${id}`));
           fetchAdmins();
       }
   };
 
+  const handlePromoteAdmin = async (id: string, currentRole: AdminRole) => {
+    const newRole = currentRole === 'driver' ? 'super_admin' : 'driver';
+    if (window.confirm(`Change role to ${newRole}?`)) {
+      await update(ref(db, `admins/${id}`), { role: newRole });
+      fetchAdmins();
+    }
+  };
 
-  // --- RENDERING ---
+  // --- DISPATCH ACTIONS ---
+  const handleAssignDriver = async (orderId: string, driverEmail: string) => {
+    try {
+      await update(ref(db, `orders/${orderId}`), { 
+        assignedDriverId: driverEmail,
+        status: 'assigned'
+      });
+      // No manual fetch needed, onValue listener will update state
+    } catch (error) {
+      console.error("Error assigning driver:", error);
+    }
+  };
 
-  if (loading) return <div className="p-10 text-center">Loading Admin Panel...</div>;
+  const handleCompleteOrder = async (orderId: string) => {
+     if (window.confirm("Mark this order as delivered?")) {
+       setActionLoading(orderId);
+       try {
+         await update(ref(db, `orders/${orderId}`), { status: 'delivered' });
+         // No manual fetch needed, onValue listener will update state
+       } catch (error: any) {
+         console.error("Error updating order:", error);
+         alert(`Failed to update order: ${error.message}`);
+       } finally {
+         setActionLoading(null);
+       }
+     }
+  };
+
+  // --- RENDERING HELPERS ---
+  
+  // Filter orders for Drivers
+  const myJobs = orders.filter(o => o.assignedDriverId?.toLowerCase() === user?.email?.toLowerCase() && o.status !== 'delivered');
+  const myCompletedJobs = orders.filter(o => o.assignedDriverId?.toLowerCase() === user?.email?.toLowerCase() && o.status === 'delivered');
+  const pendingOrders = orders.filter(o => o.status === 'pending');
+  const assignedOrders = orders.filter(o => o.status === 'assigned');
+
+  if (loading) return <div className="p-10 text-center">Loading Panel...</div>;
 
   if (!user) {
     return (
       <div className="max-w-md mx-auto mt-20 p-8 bg-white rounded-xl shadow-lg border border-gray-100 text-center">
         <UserIcon className="w-16 h-16 mx-auto text-gray-400 mb-4" />
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Admin Access Required</h2>
-        <p className="text-gray-500 mb-6">Please log in to your account to access the dashboard.</p>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Access Required</h2>
+        <p className="text-gray-500 mb-6">Please log in to your driver or admin account.</p>
         <Link to="/auth" className="block w-full bg-brand-dark text-white py-3 rounded-lg font-bold hover:bg-gray-800 transition-colors">
           Log In
         </Link>
@@ -191,50 +256,52 @@ const AdminPage = () => {
     );
   }
 
-  if (!isAdmin) {
+  if (!userRole) {
     return (
       <div className="max-w-md mx-auto mt-20 p-8 bg-white rounded-xl shadow-lg border border-red-100 text-center">
         <div className="bg-red-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
              <span className="text-3xl">🚫</span>
         </div>
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Access Denied</h2>
-        <p className="text-gray-500 mb-6">Your account ({user.email}) does not have administrative privileges.</p>
+        <p className="text-gray-500 mb-6">Your account ({user.email}) is not registered as a driver or admin.</p>
         <Link to="/" className="text-brand-blue font-bold hover:underline">Return Home</Link>
       </div>
     );
   }
+
+  const isSuperAdmin = userRole === 'super_admin';
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="flex flex-col md:flex-row items-center justify-between mb-8 gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
-             <BarChartIcon className="w-8 h-8 text-brand-dark" />
-             Admin Dashboard
+             {isSuperAdmin ? <BarChartIcon className="w-8 h-8 text-brand-red" /> : <BikeIcon className="w-8 h-8 text-brand-blue" />}
+             {isSuperAdmin ? 'Super Admin Dashboard' : 'Driver Portal'}
           </h1>
-          <p className="text-gray-500 mt-1">Logged in as {user.email}</p>
+          <div className="flex items-center gap-2 mt-1">
+             <span className={`text-xs px-2 py-1 rounded font-bold uppercase ${isSuperAdmin ? 'bg-yellow-100 text-yellow-800' : 'bg-blue-100 text-blue-800'}`}>
+               {userRole.replace('_', ' ')}
+             </span>
+             <span className="text-gray-500 text-sm">{user.email}</span>
+          </div>
         </div>
         
         {/* Tabs */}
-        <div className="flex bg-gray-100 p-1 rounded-lg">
-            <button 
-                onClick={() => setActiveTab('overview')}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'overview' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-                Overview
-            </button>
-            <button 
-                onClick={() => setActiveTab('restaurants')}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'restaurants' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-                Restaurants
-            </button>
-             <button 
-                onClick={() => setActiveTab('admins')}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeTab === 'admins' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-                Access Control
-            </button>
+        <div className="flex bg-gray-100 p-1 rounded-lg overflow-x-auto">
+            <button onClick={() => setActiveTab('overview')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'overview' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Overview</button>
+            
+            {isSuperAdmin && (
+              <>
+                <button onClick={() => setActiveTab('dispatch')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'dispatch' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Dispatch ({pendingOrders.length})</button>
+                <button onClick={() => setActiveTab('restaurants')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'restaurants' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Restaurants</button>
+                <button onClick={() => setActiveTab('admins')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'admins' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>Drivers & Staff</button>
+              </>
+            )}
+            
+            {!isSuperAdmin && (
+               <button onClick={() => setActiveTab('myjobs')} className={`px-4 py-2 rounded-md text-sm font-medium whitespace-nowrap ${activeTab === 'myjobs' ? 'bg-white shadow-sm text-brand-dark' : 'text-gray-500'}`}>My Jobs ({myJobs.length})</button>
+            )}
         </div>
       </div>
 
@@ -242,54 +309,169 @@ const AdminPage = () => {
       {activeTab === 'overview' && (
         <div className="animate-fade-in">
              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                <p className="text-gray-500 text-sm font-medium uppercase">Total Revenue (Weekly)</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">R 51,100</h3>
-                <span className="text-green-500 text-sm font-bold">+12% from last week</span>
-                </div>
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                <p className="text-gray-500 text-sm font-medium uppercase">Active Orders</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">14</h3>
-                <span className="text-brand-blue text-sm font-bold">8 Food, 6 Parcels</span>
-                </div>
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                <p className="text-gray-500 text-sm font-medium uppercase">Active Drivers</p>
-                <h3 className="text-3xl font-bold text-gray-900 mt-2">28</h3>
-                <span className="text-gray-400 text-sm">In West Rand District</span>
-                </div>
+                {isSuperAdmin ? (
+                  <>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                      <p className="text-gray-500 text-sm font-medium uppercase">Total Orders (All Time)</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{orders.length}</h3>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                      <p className="text-gray-500 text-sm font-medium uppercase">Pending Dispatch</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{pendingOrders.length}</h3>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                      <p className="text-gray-500 text-sm font-medium uppercase">Total Staff</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{adminList.length}</h3>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                      <p className="text-gray-500 text-sm font-medium uppercase">My Active Jobs</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{myJobs.length}</h3>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                      <p className="text-gray-500 text-sm font-medium uppercase">Completed Jobs</p>
+                      <h3 className="text-3xl font-bold text-gray-900 mt-2">{myCompletedJobs.length}</h3>
+                      <span className="text-green-500 text-sm font-bold">Good Job!</span>
+                    </div>
+                  </>
+                )}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-96">
-                <h3 className="text-lg font-bold text-gray-800 mb-4">Weekly Revenue</h3>
-                <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={DAILY_DATA}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee"/>
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} />
-                    <YAxis axisLine={false} tickLine={false} tickFormatter={(value) => `R${value/1000}k`}/>
-                    <Tooltip formatter={(value: number) => [`R ${value}`, 'Revenue']} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }} />
-                    <Bar dataKey="revenue" fill="#1D3557" radius={[4, 4, 0, 0]} barSize={30} />
-                    </BarChart>
-                </ResponsiveContainer>
-                </div>
+            {isSuperAdmin && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-96">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4">Weekly Revenue (Simulated)</h3>
+                  <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={DAILY_DATA}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee"/>
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} />
+                      <YAxis axisLine={false} tickLine={false} tickFormatter={(value) => `R${value/1000}k`}/>
+                      <Tooltip formatter={(value: number) => [`R ${value}`, 'Revenue']} />
+                      <Bar dataKey="revenue" fill="#1D3557" radius={[4, 4, 0, 0]} barSize={30} />
+                      </BarChart>
+                  </ResponsiveContainer>
+                  </div>
 
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-96 flex flex-col">
-                <h3 className="text-lg font-bold text-gray-800 mb-4">Service Distribution</h3>
-                <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                        <Pie data={CATEGORY_DATA} cx="50%" cy="50%" innerRadius={60} outerRadius={100} fill="#8884d8" paddingAngle={5} dataKey="value">
-                        {CATEGORY_DATA.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
-                        </Pie>
-                        <Tooltip />
-                    </PieChart>
-                </ResponsiveContainer>
-                </div>
-            </div>
+                  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-96 flex flex-col">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4">Service Distribution</h3>
+                  <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                          <Pie data={CATEGORY_DATA} cx="50%" cy="50%" innerRadius={60} outerRadius={100} fill="#8884d8" paddingAngle={5} dataKey="value">
+                          {CATEGORY_DATA.map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                          </Pie>
+                          <Tooltip />
+                      </PieChart>
+                  </ResponsiveContainer>
+                  </div>
+              </div>
+            )}
         </div>
       )}
 
-      {/* --- RESTAURANTS TAB --- */}
-      {activeTab === 'restaurants' && (
+      {/* --- DISPATCH TAB (Super Admin Only) --- */}
+      {activeTab === 'dispatch' && isSuperAdmin && (
+         <div className="animate-fade-in">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Order Dispatching</h2>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+               <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="bg-gray-50 text-gray-500 text-sm uppercase">
+                      <tr>
+                        <th className="p-4">Order ID</th>
+                        <th className="p-4">Customer</th>
+                        <th className="p-4">Address</th>
+                        <th className="p-4">Status</th>
+                        <th className="p-4">Assign Driver</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {[...pendingOrders, ...assignedOrders].map(order => (
+                        <tr key={order.id} className="hover:bg-gray-50">
+                          <td className="p-4 font-mono text-xs">{order.id.slice(-6)}</td>
+                          <td className="p-4">
+                            <div className="font-bold text-gray-900">{order.customerName}</div>
+                            <div className="text-xs text-gray-500">{order.customerPhone}</div>
+                          </td>
+                          <td className="p-4 text-sm max-w-xs truncate">{order.address}</td>
+                          <td className="p-4">
+                             <span className={`px-2 py-1 rounded text-xs font-bold uppercase ${order.status === 'pending' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                               {order.status}
+                             </span>
+                          </td>
+                          <td className="p-4">
+                             {order.status === 'pending' ? (
+                               <select 
+                                onChange={(e) => handleAssignDriver(order.id, e.target.value)}
+                                className="border rounded px-2 py-1 text-sm bg-white"
+                                defaultValue=""
+                               >
+                                 <option value="" disabled>Select Driver</option>
+                                 {adminList.filter(a => a.role === 'driver' || a.role === 'super_admin').map(driver => (
+                                   <option key={driver.id} value={driver.email}>{driver.email}</option>
+                                 ))}
+                               </select>
+                             ) : (
+                               <span className="text-sm text-gray-600">{order.assignedDriverId}</span>
+                             )}
+                          </td>
+                        </tr>
+                      ))}
+                      {pendingOrders.length === 0 && assignedOrders.length === 0 && (
+                        <tr><td colSpan={5} className="p-8 text-center text-gray-500">No active orders found.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+               </div>
+            </div>
+         </div>
+      )}
+
+      {/* --- MY JOBS TAB (Driver/Admin Only) --- */}
+      {activeTab === 'myjobs' && !isSuperAdmin && (
+         <div className="animate-fade-in">
+             <h2 className="text-xl font-bold text-gray-900 mb-4">My Assigned Jobs</h2>
+             <div className="grid grid-cols-1 gap-4">
+                {myJobs.length === 0 ? (
+                  <div className="bg-white p-10 text-center rounded-xl border border-gray-100">
+                    <p className="text-gray-500">No active jobs assigned to you yet.</p>
+                  </div>
+                ) : (
+                  myJobs.map(job => (
+                    <div key={job.id} className="bg-white p-6 rounded-xl shadow-sm border border-blue-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                        <div>
+                           <div className="flex items-center gap-2 mb-1">
+                             <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded">#{job.id.slice(-4)}</span>
+                             <span className="text-xs font-bold text-blue-600 uppercase">Assigned</span>
+                           </div>
+                           <h3 className="text-lg font-bold text-gray-900">{job.address}</h3>
+                           <p className="text-sm text-gray-600">Customer: {job.customerName} ({job.customerPhone})</p>
+                           <p className="text-sm text-gray-500 mt-1 italic">"{job.instructions || 'No special instructions'}"</p>
+                           <div className="mt-2 text-sm font-bold text-brand-red">Collect: R {job.total} ({job.paymentMethod})</div>
+                           {/* Display Items */}
+                           {job.items && job.items.length > 0 && (
+                             <div className="mt-2 text-xs text-gray-500">
+                               <strong>Items:</strong> {job.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}
+                             </div>
+                           )}
+                        </div>
+                        <button 
+                          onClick={() => handleCompleteOrder(job.id)}
+                          disabled={actionLoading === job.id}
+                          className="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-bold transition-colors shadow-md w-full md:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {actionLoading === job.id ? 'Updating...' : 'Mark Delivered'}
+                        </button>
+                    </div>
+                  ))
+                )}
+             </div>
+         </div>
+      )}
+
+      {/* --- RESTAURANTS TAB (Super Admin) --- */}
+      {activeTab === 'restaurants' && isSuperAdmin && (
           <div className="animate-fade-in">
               {!isEditing ? (
                   <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -329,10 +511,11 @@ const AdminPage = () => {
                                   </div>
                               </div>
                           ))}
-                          {restaurants.length === 0 && <p className="text-gray-500 text-center py-4">No restaurants found. Add one to get started.</p>}
+                          {restaurants.length === 0 && <p className="text-gray-500 text-center py-4">No restaurants found.</p>}
                       </div>
                   </div>
               ) : (
+                  // --- EDIT FORM (Same as before) ---
                   <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8">
                       <div className="flex justify-between items-center mb-6 border-b pb-4">
                           <h2 className="text-xl font-bold text-gray-900">{currentRestaurant.id ? 'Edit Restaurant' : 'New Restaurant'}</h2>
@@ -342,41 +525,40 @@ const AdminPage = () => {
                       <form onSubmit={handleSaveRestaurant} className="space-y-6">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                               <div>
-                                  <label className="block text-sm font-medium text-gray-700 mb-1">Restaurant Name</label>
-                                  <input required value={currentRestaurant.name || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, name: e.target.value})} className="w-full border rounded-lg px-4 py-2" placeholder="e.g. Burger King" />
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                                  <input required value={currentRestaurant.name || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, name: e.target.value})} className="w-full border rounded-lg px-4 py-2" />
                               </div>
                               <div>
                                   <label className="block text-sm font-medium text-gray-700 mb-1">Cuisine</label>
-                                  <input required value={currentRestaurant.cuisine || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, cuisine: e.target.value})} className="w-full border rounded-lg px-4 py-2" placeholder="e.g. Fast Food" />
+                                  <input required value={currentRestaurant.cuisine || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, cuisine: e.target.value})} className="w-full border rounded-lg px-4 py-2" />
                               </div>
                               <div>
-                                  <label className="block text-sm font-medium text-gray-700 mb-1">Rating (1-5)</label>
-                                  <input type="number" step="0.1" max="5" required value={currentRestaurant.rating || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, rating: parseFloat(e.target.value)})} className="w-full border rounded-lg px-4 py-2" placeholder="4.5" />
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Rating</label>
+                                  <input type="number" step="0.1" max="5" required value={currentRestaurant.rating || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, rating: parseFloat(e.target.value)})} className="w-full border rounded-lg px-4 py-2" />
                               </div>
                               <div>
-                                  <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Time</label>
-                                  <input required value={currentRestaurant.deliveryTime || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, deliveryTime: e.target.value})} className="w-full border rounded-lg px-4 py-2" placeholder="e.g. 20-30 min" />
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">Time</label>
+                                  <input required value={currentRestaurant.deliveryTime || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, deliveryTime: e.target.value})} className="w-full border rounded-lg px-4 py-2" />
                               </div>
                           </div>
                           <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1">Image URL</label>
-                                <input value={currentRestaurant.image || ''} onChange={e => setCurrentRestaurant({...currentRestaurant, image: e.target.value})} className="w-full border rounded-lg px-4 py-2" placeholder="https://..." />
+                                <ImageUploader label="Cover Image" currentImage={currentRestaurant.image} onImageSelected={(base64) => setCurrentRestaurant({...currentRestaurant, image: base64})} />
                           </div>
-
                           <div className="border-t pt-6">
                               <div className="flex justify-between items-center mb-4">
                                   <h3 className="font-bold text-gray-800">Menu Items</h3>
                                   <button type="button" onClick={handleAddMenuItem} className="text-sm text-brand-blue font-bold">+ Add Item</button>
                               </div>
-                              
                               <div className="space-y-4">
-                                  {currentMenu.map((item, index) => (
+                                  {currentMenu.map((item) => (
                                       <div key={item.id} className="bg-gray-50 p-4 rounded-lg flex flex-col md:flex-row gap-4 items-start border border-gray-200">
                                           <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-2 w-full">
-                                              <input value={item.name} onChange={e => handleUpdateMenuItem(item.id, 'name', e.target.value)} className="border rounded px-2 py-1" placeholder="Item Name" />
+                                              <input value={item.name} onChange={e => handleUpdateMenuItem(item.id, 'name', e.target.value)} className="border rounded px-2 py-1" placeholder="Name" />
                                               <input type="number" value={item.price} onChange={e => handleUpdateMenuItem(item.id, 'price', Number(e.target.value))} className="border rounded px-2 py-1" placeholder="Price" />
                                               <input value={item.description} onChange={e => handleUpdateMenuItem(item.id, 'description', e.target.value)} className="border rounded px-2 py-1 md:col-span-2" placeholder="Description" />
-                                              <input value={item.image} onChange={e => handleUpdateMenuItem(item.id, 'image', e.target.value)} className="border rounded px-2 py-1 md:col-span-2" placeholder="Image URL" />
+                                              <div className="md:col-span-2">
+                                                  <ImageUploader label="Item Image" currentImage={item.image} onImageSelected={(base64) => handleUpdateMenuItem(item.id, 'image', base64)} />
+                                              </div>
                                               <select value={item.category} onChange={e => handleUpdateMenuItem(item.id, 'category', e.target.value)} className="border rounded px-2 py-1">
                                                   <option>Mains</option>
                                                   <option>Starters</option>
@@ -384,18 +566,13 @@ const AdminPage = () => {
                                                   <option>Drinks</option>
                                               </select>
                                           </div>
-                                          <button type="button" onClick={() => handleRemoveMenuItem(item.id)} className="text-red-500 hover:text-red-700">
-                                              <TrashIcon className="w-5 h-5" />
-                                          </button>
+                                          <button type="button" onClick={() => handleRemoveMenuItem(item.id)} className="text-red-500 hover:text-red-700"><TrashIcon className="w-5 h-5" /></button>
                                       </div>
                                   ))}
                               </div>
                           </div>
-
                           <div className="flex justify-end pt-4">
-                              <button type="submit" className="bg-brand-dark text-white px-8 py-3 rounded-lg font-bold hover:bg-gray-800 transition-colors">
-                                  Save All Changes
-                              </button>
+                              <button type="submit" className="bg-brand-dark text-white px-8 py-3 rounded-lg font-bold hover:bg-gray-800 transition-colors">Save Changes</button>
                           </div>
                       </form>
                   </div>
@@ -403,46 +580,73 @@ const AdminPage = () => {
           </div>
       )}
 
-      {/* --- ADMINS TAB --- */}
-      {activeTab === 'admins' && (
-          <div className="animate-fade-in bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-3xl mx-auto">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Manage Admin Access</h2>
+      {/* --- ADMINS TAB (Super Admin) --- */}
+      {activeTab === 'admins' && isSuperAdmin && (
+          <div className="animate-fade-in bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-4xl mx-auto">
+              <h2 className="text-xl font-bold text-gray-900 mb-6">Manage Drivers & Staff</h2>
               
-              <form onSubmit={handleAddAdmin} className="flex gap-2 mb-8 p-4 bg-gray-50 rounded-lg">
+              <form onSubmit={handleAddAdmin} className="flex gap-2 mb-8 p-4 bg-gray-50 rounded-lg flex-col md:flex-row">
                   <input 
                     type="email" 
                     required 
                     value={newAdminEmail}
                     onChange={(e) => setNewAdminEmail(e.target.value)}
                     placeholder="Enter email address..." 
-                    className="flex-grow border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-brand-blue outline-none" 
+                    className="flex-grow border border-gray-300 rounded-lg px-4 py-2 outline-none" 
                   />
+                  <select 
+                    value={newAdminRole}
+                    onChange={(e) => setNewAdminRole(e.target.value as AdminRole)}
+                    className="border border-gray-300 rounded-lg px-4 py-2 outline-none bg-white"
+                  >
+                    <option value="driver">Driver</option>
+                    <option value="super_admin">Super Admin</option>
+                  </select>
                   <button type="submit" className="bg-brand-blue text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-600 transition-colors">
-                      Add Admin
+                      Add User
                   </button>
               </form>
 
-              <div className="space-y-2">
-                  <h3 className="text-sm font-bold text-gray-500 uppercase mb-2">Current Admins</h3>
+              <div className="space-y-3">
+                  <div className="grid grid-cols-12 text-xs font-bold text-gray-500 uppercase px-4 mb-2">
+                    <div className="col-span-5">User</div>
+                    <div className="col-span-3">Role</div>
+                    <div className="col-span-4 text-right">Actions</div>
+                  </div>
                   {adminList.map(admin => (
-                      <div key={admin.id} className="flex justify-between items-center p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                          <div className="flex items-center gap-3">
-                              <div className="bg-gray-200 p-2 rounded-full">
+                      <div key={admin.id} className="grid grid-cols-12 items-center p-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                          <div className="col-span-5 flex items-center gap-3 overflow-hidden">
+                              <div className="bg-gray-200 p-2 rounded-full flex-shrink-0">
                                   <UserIcon className="w-4 h-4 text-gray-600" />
                               </div>
-                              <span className="font-medium text-gray-900">{admin.email}</span>
+                              <span className="font-medium text-gray-900 truncate">{admin.email}</span>
                           </div>
-                          {admin.email !== user.email && (
-                              <button 
-                                onClick={() => handleRemoveAdmin(admin.id)}
-                                className="text-red-500 hover:text-red-700 text-sm font-semibold"
-                              >
-                                  Remove Access
-                              </button>
-                          )}
-                          {admin.email === user.email && (
-                              <span className="text-xs bg-brand-light text-brand-dark px-2 py-1 rounded-full font-bold">You</span>
-                          )}
+                          <div className="col-span-3">
+                             <span className={`text-xs px-2 py-1 rounded-full font-bold uppercase ${admin.role === 'super_admin' ? 'bg-yellow-100 text-yellow-800' : 'bg-blue-100 text-blue-800'}`}>
+                               {admin.role.replace('_', ' ')}
+                             </span>
+                          </div>
+                          <div className="col-span-4 flex justify-end gap-2">
+                              {admin.email !== user.email && (
+                                <>
+                                  <button 
+                                    onClick={() => handlePromoteAdmin(admin.id, admin.role)}
+                                    className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1 rounded"
+                                  >
+                                    {admin.role === 'driver' ? 'Make Super Admin' : 'Make Driver'}
+                                  </button>
+                                  <button 
+                                    onClick={() => handleRemoveAdmin(admin.id)}
+                                    className="text-xs bg-red-50 hover:bg-red-100 text-red-600 px-2 py-1 rounded"
+                                  >
+                                    Remove
+                                  </button>
+                                </>
+                              )}
+                              {admin.email === user.email && (
+                                  <span className="text-xs text-gray-400 italic">Current User</span>
+                              )}
+                          </div>
                       </div>
                   ))}
               </div>
